@@ -13,6 +13,7 @@ class CointegrationStrat(bt.Strategy):
         ('coint_look_back_period', 365),
         ('long_bias', True),
         ('selection_freq', 'month'),
+        ('selected_pairs_number', 1),
     )
 
     def log(self ,txt ,doprint = None):
@@ -188,15 +189,19 @@ class CointegrationStrat(bt.Strategy):
 
         return t_value
 
-    def ADF_Measure(self, asset_sample, prev_sample_dict):
+    def ADF_Measure(self, asset_sample, prev_sample_dict, num_pairs):
 
         n = len(asset_sample)
-        best_ADF_test_value = self.params.ADF_threshold
-        selected_first_asset = None
-        selected_second_asset = None
-        selected_beta_1 = None
-        selected_beta_0 = None
-        selected_best_lag_order = None
+
+        selected_asset_pairs = []
+        selected_betas = []
+        selected_best_lag_order = []
+        selected_best_ADF_test_value = []
+        for i in range(num_pairs):
+            selected_asset_pairs.append(None)
+            selected_betas.append(None)
+            selected_best_lag_order.append(None)
+            selected_best_ADF_test_value.append(self.params.ADF_threshold)
 
         for i in range(n - 1):
 
@@ -239,15 +244,31 @@ class CointegrationStrat(bt.Strategy):
                 if test_value is None:
                     continue
 
-                if test_value < best_ADF_test_value:
-                    best_ADF_test_value = test_value
-                    selected_first_asset = first_asset
-                    selected_second_asset = second_asset
-                    selected_beta_1 = beta_1
-                    selected_beta_0 = beta_0
-                    selected_best_lag_order = best_lag_order
+                pos = 4
+                best_position_flag = False
 
-        return selected_beta_0, selected_beta_1, selected_first_asset, selected_second_asset, best_ADF_test_value, selected_best_lag_order
+                while pos != 0 and not best_position_flag:
+
+                    if test_value < selected_best_ADF_test_value[pos-1]:
+                        pos -= 1
+                        continue
+                    else :
+                        best_position_flag = True
+
+                if pos < 4:
+                    if pos < 3:
+                        # adjust the selected pair
+                        selected_asset_pairs[pos+1 : ] = selected_asset_pairs[pos:-1]
+                        selected_betas[pos + 1:] = selected_betas[pos:-1]
+                        selected_best_lag_order[pos + 1:] = selected_best_lag_order[pos:-1]
+                        selected_best_ADF_test_value[pos + 1:] = selected_best_ADF_test_value[pos:-1]
+
+                    selected_asset_pairs[pos] = [first_asset, second_asset]
+                    selected_betas[pos] = [beta_0, beta_1]
+                    selected_best_lag_order[pos] = best_lag_order
+                    selected_best_ADF_test_value[pos] = test_value
+
+        return selected_asset_pairs, selected_betas, selected_best_lag_order, selected_best_ADF_test_value
 
     def previous_performance(self, coint_look_back_period, selected_first_asset_prev_open, selected_first_asset_prev_close,
                              selected_second_asset_prev_open, selected_second_asset_prev_close,
@@ -474,6 +495,53 @@ class CointegrationStrat(bt.Strategy):
 
         return best_threshold
 
+    def flow_management(self, trading_flag, trading_pairs, trading_betas, long_only_flag, max_pos, asset_universe):
+
+        number_pending_trade_pairs = 0
+        asset_position_dict = {}
+        for asset_name in asset_universe:
+            asset_position_dict[asset_name] = float(0)
+
+        for flag in trading_flag:
+            if flag != 0:
+                number_pending_trade_pairs += 1
+
+        if number_pending_trade_pairs == 0:
+
+            if long_only_flag:
+                for asset_name in asset_universe:
+                    asset_position_dict[asset_name] = float(1/len(asset_universe))
+
+        else:
+
+            each_pair_prop = max_pos / number_pending_trade_pairs
+
+            for pos, pending_pair in enumerate(trading_pairs):
+
+                if trading_flag[pos] == 0 :
+                    continue
+
+                else:
+
+                    first_asset_name = pending_pair[0]
+                    second_asset_name = pending_pair[1]
+                    beta_1 = trading_betas[pos][1]
+
+                    first_asset_prop = 1/(1 + np.abs(beta_1)) * each_pair_prop
+                    second_asset_prop = beta_1/(1 + np.abs(beta_1)) * each_pair_prop
+
+                    if trading_flag[pos] == 1:
+
+                        asset_position_dict[first_asset_name] = asset_position_dict[first_asset_name] - first_asset_prop
+                        asset_position_dict[second_asset_name] = asset_position_dict[second_asset_name] + second_asset_prop
+
+                    else:
+
+                        asset_position_dict[first_asset_name] = asset_position_dict[first_asset_name] + first_asset_prop
+                        asset_position_dict[second_asset_name] = asset_position_dict[second_asset_name] - second_asset_prop
+
+
+        return asset_position_dict
 
     def __init__(self):
 
@@ -481,16 +549,17 @@ class CointegrationStrat(bt.Strategy):
         self.pair_selection_flag = False
         self.current_time = None
         self.prev_time = None
-        # Storing the selected pair and its sample log return
-        self.beta_0 = None
-        self.beta_1 = None
-        self.selected_first_asset = None
-        self.selected_second_asset = None
-        self.selected_first_asset_log_price_ref = None
-        self.selected_second_asset_log_price_ref = None
-        self.spread_optimal_lag_order = None
-        self.spread_threshold = None
-        self.trading_flag = 0
+        # Storing the selected pairs and its sample log return
+        self.selected_asset_pairs = []
+        self.selected_asset_pair_log_price_ref = []
+        for i in range(self.params.selected_pairs_number):
+            self.selected_asset_pair_log_price_ref.append(None)
+        self.selected_betas = []
+        self.selected_best_lag_order = []
+        self.selected_spread_thresholds = []
+        for i in range(self.params.selected_pairs_number):
+            self.spread_thresholds.append(None)
+        self.trading_flag = []
         self.asset_sample = []
         self.prev_sample_dict = {}
         # Storing the portfilio spending
@@ -498,9 +567,22 @@ class CointegrationStrat(bt.Strategy):
         self.SL_rate = self.params.SL_rate
         self.threshold_set = np.array(range(1, 80)) * 0.025
         self.initial_asset_value = None
-
+        # storing the trading pairs info
+        self.trading_pairs = []
+        self.trading_pair_log_price_ref = []
+        self.trading_betas = []
+        self.trading_best_lag_order = []
+        self.trading_spread_thresholds = []
+        # managing asset position
+        self.asset_universe = []
+        self.asset_position_dict = {}
 
     def next(self):
+
+        if self.trading_days == 0:
+            for data in self.datas:
+                self.asset_position_dict[data._name] = 0
+                self.asset_universe.append(data._name)
 
         self.trading_days += 1
 
@@ -545,64 +627,64 @@ class CointegrationStrat(bt.Strategy):
 
             # Selecting the Trading Pairs for next month based on TLS regrssion and checking the ADF test value
 
-            beta_0, beta_1, selected_first_asset, selected_second_asset, test_value, optimal_lag_order = \
-            self.ADF_Measure(self.asset_sample, self.prev_sample_dict)
+            selected_asset_pairs, selected_betas, selected_best_lag_order, selected_best_ADF_test_value = \
+            self.ADF_Measure(self.asset_sample, self.prev_sample_dict, self.params.selected_pairs_number)
 
-            self.log('Selected pair %s & %s' %(selected_first_asset, selected_second_asset))
-            self.log('Selected ADF value : %f' % test_value)
+            # record the ref price for all selected pairs
+            for pos, curr_pairs in enumerate(selected_asset_pairs):
+                if curr_pairs is None:
+                    continue
+                else:
+                    for data in self.datas:
+                        if data._name == curr_pairs[0]:
+                            first_asset_log_price_ref = np.log(data.close[0])
+                        elif data._name == curr_pairs[1]:
+                            second_asset_log_price_ref = np.log(data.close[0])
 
-            # Unwind all the trading position of previous pairs
+                    self.selected_asset_pair_log_price_ref[pos] = [first_asset_log_price_ref, second_asset_log_price_ref]
 
-            if self.selected_first_asset != selected_first_asset or self.selected_second_asset != selected_second_asset:
-                if self.trading_flag != 0:
-                    self.trading_flag = 0
-                    self.log('Close Position :  %s & %s' % (self.selected_first_asset ,self.selected_second_asset))
+            # renew the selected pair information
 
-                    # back to even position
-                    if self.params.long_bias:
-                        number_of_asset = len(self.asset_sample)
-                        for data in self.datas:
-                            self.order_target_percent(data=data, target=1 / number_of_asset)
-                    else:
-                        for data in self.datas:
-                            if data._name == self.selected_first_asset or data._name == self.selected_second_asset:
-                                self.close(data, exectype=bt.Order.Market)
+            self.selected_asset_pairs = selected_asset_pairs
+            self.selected_betas = selected_betas
+            self.selected_best_lag_order = selected_best_lag_order
 
-            self.selected_first_asset = selected_first_asset
-            self.selected_second_asset = selected_second_asset
-            self.beta_0 = beta_0
-            self.beta_1 = beta_1
-            self.spread_optimal_lag_order = optimal_lag_order
-
-            if self.selected_first_asset is None :
+            if self.selected_asset_pairs[0] is None :
                 return
 
             # Saving the log price reference for this month and selecting the threshold
-            selected_first_asset_prev_open = []
-            selected_first_asset_prev_close = []
-            selected_second_asset_prev_open = []
-            selected_second_asset_prev_close = []
 
-            for data in self.datas:
+            for pos, curr_pairs in enumerate(selected_asset_pairs):
 
-                 if data._name == self.selected_first_asset:
-                     self.selected_first_asset_log_price_ref = np.log(data.close[0])
-                     for day in range(-2 * self.params.coint_look_back_period, 0):
-                         selected_first_asset_prev_open.append(data.open[day])
-                         selected_first_asset_prev_close.append(data.close[day])
+                if curr_pairs is None:
+                    continue
 
-                 elif data._name == self.selected_second_asset:
-                     self.selected_second_asset_log_price_ref = np.log(data.close[0])
-                     for day in range(-2 * self.params.coint_look_back_period, 0):
-                         selected_second_asset_prev_open.append(data.open[day])
-                         selected_second_asset_prev_close.append(data.close[day])
+                selected_first_asset = curr_pairs[0]
+                selected_second_asset = curr_pairs[1]
 
-            self.spread_threshold = self.optimal_threshold(self.params.coint_look_back_period,
-                                                           selected_first_asset_prev_open, selected_first_asset_prev_close,
-                                                           selected_second_asset_prev_open, selected_second_asset_prev_close,
-                                                           self.beta_0, self.beta_1, self.threshold_set, self.SL_rate)
+                selected_first_asset_prev_open = []
+                selected_first_asset_prev_close = []
+                selected_second_asset_prev_open = []
+                selected_second_asset_prev_close = []
 
-            self.log('Finish Spreaed Threshold Searching')
+                for data in self.datas:
+
+                     if data._name == selected_first_asset:
+                         for day in range(-2 * self.params.coint_look_back_period, 0):
+                             selected_first_asset_prev_open.append(data.open[day])
+                             selected_first_asset_prev_close.append(data.close[day])
+
+                     elif data._name == selected_second_asset:
+                         for day in range(-2 * self.params.coint_look_back_period, 0):
+                             selected_second_asset_prev_open.append(data.open[day])
+                             selected_second_asset_prev_close.append(data.close[day])
+
+                curr_pair_spread_threshold = self.optimal_threshold(self.params.coint_look_back_period,
+                                                                    selected_first_asset_prev_open, selected_first_asset_prev_close,
+                                                                    selected_second_asset_prev_open, selected_second_asset_prev_close,
+                                                                    self.beta_0, self.beta_1, self.threshold_set, self.SL_rate)
+
+                self.selected_spread_thresholds[pos] = curr_pair_spread_threshold
 
             return
 
@@ -612,135 +694,140 @@ class CointegrationStrat(bt.Strategy):
         if self.selected_first_asset is None :
             return
 
+        # computing the signal for existing traded pairs
+
+        for pos, trading_pair in enumerate(self.trading_pairs):
+
+            selected_first_asset = trading_pair[0]
+            selected_second_asset = trading_pair[1]
+            selected_first_asset_log_price_ref = self.trading_pair_log_price_ref[pos][0]
+            selected_second_asset_log_price_ref = self.trading_pair_log_price_ref[pos][1]
+            beta_0 = self.trading_betas[pos][0]
+            beta_1 = self.trading_betas[pos][1]
+            spread_optimal_lag_order = self.trading_best_lag_order[pos]
+
+            prev_first_asset_data = []
+            prev_second_asset_data = []
+
+            for data in self.datas:
+
+                if data._name == selected_first_asset:
+                    first_asset = data
+                    curr_first_asset_scaled_price = np.log(data.close[0]) - selected_first_asset_log_price_ref
+                    for day in range(-1 * self.params.coint_look_back_period, 0):
+                        prev_first_asset_data.append(data.close[day])
+
+
+                elif data._name == selected_second_asset:
+                    second_asset = data
+                    curr_second_asset_scaled_price = np.log(data.close[0]) - selected_second_asset_log_price_ref
+                    for day in range(-1 * self.params.coint_look_back_period, 0):
+                        prev_first_asset_data.append(data.close[day])
+
+            curr_spread = (curr_first_asset_scaled_price - beta_1 * curr_second_asset_scaled_price - beta_0)/(1 + beta_1 ** 2)
+
+            prev_log_scaled_first_asset_data = np.log(prev_first_asset_data) - np.log(prev_first_asset_data[0])
+            prev_log_scaled_second_asset_data = np.log(prev_second_asset_data) - np.log(prev_second_asset_data[0])
+
+            prev_spread = (prev_log_scaled_first_asset_data - beta_0 - beta_1 * prev_log_scaled_second_asset_data)/(1 + beta_1 ** 2)
+
+            curr_ADF_test_val = self.ADF_test(prev_spread, spread_optimal_lag_order)
+
+            if curr_ADF_test_val > self.params.ADF_threshold:
+                self.trading_flag[pos] = 0
+
+            else :
+                curr_spread_vol = np.std(prev_spread)
+                curr_std_spread = curr_spread / curr_spread_vol
+
+                if self.params.cross_zero:
+                    exit_threshold = 0
+                else :
+                    exit_threshold = self.trading_spread_thresholds[pos]
+
+                if (self.trading_flag[pos] == 1 and curr_std_spread < exit_threshold) or \
+                        (self.trading_flag[pos] == -1 and curr_std_spread > -1 * exit_threshold):
+                    self.trading_flag[pos] = 0
+
+        # computing signal for selected pairs
+
+        for pos, curr_pair in enumerate(self.selected_asset_pairs):
+
+            if curr_pair in self.trading_pairs:
+                continue
+
+            selected_first_asset = curr_pair[0]
+            selected_second_asset = curr_pair[1]
+            selected_first_asset_log_price_ref = self.selected_asset_pair_log_price_ref[pos][0]
+            selected_second_asset_log_price_ref = self.selected_asset_pair_log_price_ref[pos][1]
+            beta_0 = self.selected_betas[pos][0]
+            beta_1 = self.selected_betas[pos][1]
+            spread_optimal_lag_order = self.selected_best_lag_order[pos]
+
+            prev_first_asset_data = []
+            prev_second_asset_data = []
+
+            for data in self.datas:
+
+                if data._name == selected_first_asset:
+                    first_asset = data
+                    curr_first_asset_scaled_price = np.log(data.close[0]) - selected_first_asset_log_price_ref
+                    for day in range(-1 * self.params.coint_look_back_period, 0):
+                        prev_first_asset_data.append(data.close[day])
+
+
+                elif data._name == selected_second_asset:
+                    second_asset = data
+                    curr_second_asset_scaled_price = np.log(data.close[0]) - selected_second_asset_log_price_ref
+                    for day in range(-1 * self.params.coint_look_back_period, 0):
+                        prev_first_asset_data.append(data.close[day])
+
+            curr_spread = (curr_first_asset_scaled_price - beta_1 * curr_second_asset_scaled_price - beta_0)/(1 + beta_1 ** 2)
+
+            prev_log_scaled_first_asset_data = np.log(prev_first_asset_data) - np.log(prev_first_asset_data[0])
+            prev_log_scaled_second_asset_data = np.log(prev_second_asset_data) - np.log(prev_second_asset_data[0])
+
+            prev_spread = (prev_log_scaled_first_asset_data - beta_0 - beta_1 * prev_log_scaled_second_asset_data)/(1 + beta_1 ** 2)
+
+            curr_ADF_test_val = self.ADF_test(prev_spread, spread_optimal_lag_order)
+
+            if curr_ADF_test_val > self.params.ADF_threshold:
+                continue
+
+            else :
+                curr_spread_vol = np.std(prev_spread)
+                curr_std_spread = curr_spread / curr_spread_vol
+
+                trading_threshold = self.selected_spread_thresholds[pos]
+
+                if (curr_std_spread > trading_threshold):
+                    self.trading_pairs.append(curr_pair)
+                    self.trading_pair_log_price_ref.append(self.selected_asset_pair_log_price_ref[pos])
+                    self.trading_betas.apppend(self.selected_betas[pos])
+                    self.trading_best_lag_order.append(self.selected_best_lag_order[pos])
+                    self.trading_spread_thresholds.append(self.selected_spread_thresholds[pos])
+                    self.trading_flag.append(1)
+                elif (curr_std_spread < -1 * trading_threshold):
+                    self.trading_pairs.append(curr_pair)
+                    self.trading_pair_log_price_ref.append(self.selected_asset_pair_log_price_ref[pos])
+                    self.trading_betas.apppend(self.selected_betas[pos])
+                    self.trading_best_lag_order.append(self.selected_best_lag_order[pos])
+                    self.trading_spread_thresholds.append(self.selected_spread_thresholds[pos])
+                    self.trading_flag.append(-1)
+
+        # Flow Management
+
+        self.asset_position_dict = self.flow_management(self.trading_flag, self.trading_pairs, self.trading_betas,
+                                                        self.params.long_bias, self.max_pos, self.asset_universe)
+
+        # Adjusting the asset position according to the flow
+
         for data in self.datas:
-
-            if data._name == self.selected_first_asset:
-                first_asset = data
-                curr_first_asset_scaled_price = np.log(data.close[0]) - self.selected_first_asset_log_price_ref
-
-            elif data._name == self.selected_second_asset:
-                second_asset = data
-                curr_second_asset_scaled_price = np.log(data.close[0]) - self.selected_second_asset_log_price_ref
-
-        curr_spread = (curr_first_asset_scaled_price - self.beta_1 * curr_second_asset_scaled_price - self.beta_0)\
-                      /(1+self.beta_1**2)
-
-        # checking whether pair is still conintegrated
-        cointegrated_flag = True
-        prev_first_asset_data = []
-        prev_second_asset_data = []
-
-        for data in self.datas:
-
-            if data._name == self.selected_first_asset:
-                for day in range(-1 * self.params.coint_look_back_period, 0):
-                    prev_first_asset_data.append(data.close[day])
-
-            elif data._name == self.selected_second_asset:
-                for day in range(-1 * self.params.coint_look_back_period, 0):
-                    prev_second_asset_data.append(data.close[day])
-
-        prev_log_scaled_first_asset_data = np.log(prev_first_asset_data) - np.log(prev_first_asset_data[0])
-        prev_log_scaled_second_asset_data = np.log(prev_second_asset_data) - np.log(prev_second_asset_data[0])
-
-        prev_spread = (prev_log_scaled_first_asset_data - self.beta_0 - self.beta_1 * prev_log_scaled_second_asset_data)\
-                      /(1 + self.beta_1 ** 2)
-
-        curr_ADF_test_val = self.ADF_test(prev_spread, self.spread_optimal_lag_order)
-
-        if curr_ADF_test_val > self.params.ADF_threshold:
-            cointegrated_flag = False
-
-        curr_spread_vol = np.std(prev_spread)
-
-        curr_std_spread = curr_spread/curr_spread_vol
-
-
-        if self.trading_flag == 0:
-
-            if not cointegrated_flag:
-                return
-
-            first_asset_proportion = 1 / (1+np.abs(self.beta_1)) * self.max_pos
-
-            second_asset_proportion = self.beta_1 / (1+np.abs(self.beta_1)) * self.max_pos
-
-            # Do Long and Short based on the divergence of the equilibrium of two correlated asset
-
-            if (curr_std_spread < -1 * self.spread_threshold):
-
-                # close the even pos
-                if self.params.long_bias:
-                    for data in self.datas:
-                        if data._name != self.selected_first_asset and data._name != self.selected_second_asset:
-                            self.close(data, exectype=bt.Order.Market)
-
-                self.order_target_percent(data = first_asset, target = first_asset_proportion)
-                self.order_target_percent(data = second_asset, target = -1*second_asset_proportion)
-                self.trading_flag = -1
-                self.log('Long : %s & Short : %s' % (first_asset._name ,second_asset._name))
-                self.initial_asset_value = self.stats.broker.value[0]
-
-            elif (curr_std_spread > self.spread_threshold):
-
-                # close the even pos
-                if self.params.long_bias:
-                    for data in self.datas:
-                        if data._name != self.selected_first_asset and data._name != self.selected_second_asset:
-                            self.close(data, exectype=bt.Order.Market)
-
-                self.order_target_percent(data = first_asset, target = -1*first_asset_proportion)
-                self.order_target_percent(data = second_asset, target = second_asset_proportion)
-                self.trading_flag = 1
-                self.log('Long : %s & Short : %s' % (second_asset._name, first_asset._name))
-                self.initial_asset_value = self.stats.broker.value[0]
-
-        else:
-
-            # Close the Position if the divergenece disappear
-
-            curr_pnl = (self.stats.broker.value[0] - self.initial_asset_value)/self.initial_asset_value
-
-            SL_flag = False
-
-            if curr_pnl < self.SL_rate:
-                SL_flag = True
-
-            if self.params.cross_zero:
-
-                if (curr_std_spread >= 0 and self.trading_flag == -1) or \
-                        (curr_std_spread <= 0 and self.trading_flag == 1) \
-                        or SL_flag or not cointegrated_flag:
-                    self.trading_flag = 0
-                    self.log('Close Position :  %s & %s' % (first_asset._name ,second_asset._name))
-
-                    # back to even position
-
-                    if self.params.long_bias:
-                        number_of_asset = len(self.asset_sample)
-                        for data in self.datas:
-                            self.order_target_percent(data=data, target=1 / number_of_asset)
-                    else:
-                        self.close(first_asset, exectype=bt.Order.Market)
-                        self.close(second_asset, exectype=bt.Order.Market)
-
-
-            else:
-
-                if (curr_std_spread > -1 * self.spread_threshold and self.trading_flag == -1) or \
-                        (curr_std_spread < self.spread_threshold and self.trading_flag == 1) or SL_flag\
-                        or not cointegrated_flag:
-                    self.trading_flag = 0
-                    self.log('Close Position :  %s & %s' % (first_asset._name ,second_asset._name))
-
-                    # back to even position
-                    if self.params.long_bias:
-                        number_of_asset = len(self.asset_sample)
-                        for data in self.datas:
-                            self.order_target_percent(data=data, target=1 / number_of_asset)
-                    else:
-                        self.close(first_asset, exectype=bt.Order.Market)
-                        self.close(second_asset, exectype=bt.Order.Market)
+            curr_asset = data
+            curr_asset_name = data._name
+            asset_pos = self.asset_position_dict[curr_asset_name]
+            self.order_target_percent(data=curr_asset, target=asset_pos)
+            self.log('Asset Name : %s, Position : %f' %(curr_asset_name, asset_pos))
 
     def notify_order(self, order):
 

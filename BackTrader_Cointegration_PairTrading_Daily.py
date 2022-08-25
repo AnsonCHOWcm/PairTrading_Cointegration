@@ -22,12 +22,13 @@ if __name__ == '__main__':
     cointegration_look_back_period = 30
     long_bias_flag = True
     pair_selection_freq = 'month'
+    num_pairs = 1
 
     cerebro = bt.Cerebro()
 
     cerebro.addstrategy(CointegrationStrat, printlog=print_log, SL_rate=-0.05, cross_zero=cross_zero_flag,
                         ADF_threshold=ADF_thres, coint_look_back_period=cointegration_look_back_period,
-                        long_bias=long_bias_flag, selection_freq=pair_selection_freq)
+                        long_bias=long_bias_flag, selection_freq=pair_selection_freq, selected_pairs_number = num_pairs)
 
     cerebro.broker.setcash(3000.0)
     cerebro.broker.setcommission(commission=0.001)
