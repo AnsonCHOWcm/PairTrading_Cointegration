@@ -1,5 +1,5 @@
 from __future__ import (absolute_import, division, print_function, unicode_literals)
-from Cointegration_Pair_Trading_backtrader_Strategy_class import *
+from Cointegration_Pair_Trading_backtrader_Strategy_class_PS import *
 from PerformanceTracker import *
 import glob
 import pandas as pd
@@ -20,14 +20,16 @@ if __name__ == '__main__':
     cross_zero_flag = True
     ADF_thres = -2
     cointegration_look_back_period = 30
+    PS_thres = 2
     long_bias_flag = True
     pair_selection_freq = 'month'
 
+
     cerebro = bt.Cerebro()
 
-    cerebro.addstrategy(CointegrationStrat, printlog=print_log, SL_rate=-0.05, cross_zero=cross_zero_flag,
+    cerebro.addstrategy(CointegrationStrat_PS, printlog=print_log, SL_rate=-0.05, cross_zero=cross_zero_flag,
                         ADF_threshold=ADF_thres, coint_look_back_period=cointegration_look_back_period,
-                        long_bias=long_bias_flag, selection_freq=pair_selection_freq)
+                        PS_threshold=PS_thres, long_bias=long_bias_flag, selection_freq=pair_selection_freq)
 
     cerebro.broker.setcash(3000.0)
     cerebro.broker.setcommission(commission=0.001)

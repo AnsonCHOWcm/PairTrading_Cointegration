@@ -3,7 +3,7 @@ import numpy as np
 import statsmodels.api as sm
 import scipy
 
-class CointegrationStrat(bt.Strategy):
+class CointegrationStrat_PS(bt.Strategy):
 
     params = (
         ('printlog', True),
@@ -11,6 +11,7 @@ class CointegrationStrat(bt.Strategy):
         ('cross_zero', False),
         ('ADF_threshold', -2),
         ('coint_look_back_period', 365),
+        ('PS_threshold', -2),
         ('long_bias', True),
         ('selection_freq', 'month'),
     )
@@ -249,231 +250,6 @@ class CointegrationStrat(bt.Strategy):
 
         return selected_beta_0, selected_beta_1, selected_first_asset, selected_second_asset, best_ADF_test_value, selected_best_lag_order
 
-    def previous_performance(self, coint_look_back_period, selected_first_asset_prev_open, selected_first_asset_prev_close,
-                             selected_second_asset_prev_open, selected_second_asset_prev_close,
-                             beta_0, beta_1, threshold, SL_rate, cross_zero_flag):
-
-        trading_flag = 0
-        num_trading_days = len(selected_first_asset_prev_open)
-        total_trade_count = 0
-        total_PnL = 0
-
-
-        for day in range(coint_look_back_period, num_trading_days - 1):
-
-            current_first_asset_close_price = selected_first_asset_prev_close[day]
-            current_second_asset_close_price = selected_second_asset_prev_close[day]
-            scaled_current_first_asset_close_price = np.log(selected_first_asset_prev_close[day]) - np.log(selected_first_asset_prev_close[coint_look_back_period-1])
-            scaled_current_second_asset_close_price = np.log(selected_second_asset_prev_close[day]) - np.log(selected_second_asset_prev_close[coint_look_back_period-1])
-            next_first_asset_open_price = selected_first_asset_prev_open[day+1]
-            next_second_asset_open_price = selected_second_asset_prev_open[day+1]
-
-            prev_first_asset_close_price_ls = selected_first_asset_prev_close[day - coint_look_back_period:day]
-            prev_second_asset_close_price_ls = selected_second_asset_prev_close[day - coint_look_back_period:day]
-
-            scaled_prev_first_asset_close_price_ls = np.log(prev_first_asset_close_price_ls) - np.log(prev_first_asset_close_price_ls[0])
-            scaled_prev_second_asset_close_price_ls = np.log(prev_second_asset_close_price_ls) - np.log(prev_first_asset_close_price_ls[0])
-
-            current_spread_noise = (scaled_current_first_asset_close_price - beta_0 - beta_1 *
-                                    scaled_current_second_asset_close_price) / (1 + beta_1 ** 2)
-
-            prev_std_spread_noise_ls = (scaled_prev_first_asset_close_price_ls - beta_0 - beta_1 *
-                                    scaled_prev_second_asset_close_price_ls) / (1 + beta_1 ** 2)
-
-            spread_noise_std = np.std(prev_std_spread_noise_ls)
-
-            current_std_spread_noise = current_spread_noise/spread_noise_std
-
-            if trading_flag == 0:
-
-                if abs(current_std_spread_noise) < threshold:
-                    continue
-
-                elif current_std_spread_noise > threshold:
-
-                    trading_flag = 1
-                    long_cost = next_second_asset_open_price
-                    short_cost = next_first_asset_open_price
-                    total_trade_count += 1
-
-                else:
-
-                    trading_flag = -1
-                    long_cost = next_first_asset_open_price
-                    short_cost = next_second_asset_open_price
-                    total_trade_count += 1
-
-            else:
-
-                if trading_flag == 1:
-
-                    trade_PnL = (beta_1 / (1 + np.abs(beta_1))) * (
-                                current_second_asset_close_price - long_cost) / long_cost - (
-                                            1 / (1 + np.abs(beta_1))) * (
-                                            current_first_asset_close_price - short_cost) / short_cost
-
-                    if cross_zero_flag:
-
-                        if trade_PnL > SL_rate and current_std_spread_noise > 0 and day != num_trading_days - 2:
-                            continue
-
-                        else:
-
-                            trading_flag = 0
-                            long_close = next_second_asset_open_price
-                            short_close = next_first_asset_open_price
-                            PnL = (beta_1 / (1 + np.abs(beta_1))) * (long_close - long_cost) / long_cost - (
-                                        1 / (1 + np.abs(beta_1))) * (short_close - short_cost) / short_cost
-
-
-                    else :
-
-                        if trade_PnL > SL_rate and current_std_spread_noise > threshold and day != num_trading_days - 2:
-                            continue
-
-                        else:
-
-                            trading_flag = 0
-                            long_close = next_second_asset_open_price
-                            short_close = next_first_asset_open_price
-                            PnL = (beta_1 / (1 + np.abs(beta_1))) * (long_close - long_cost) / long_cost - (
-                                        1 / (1 + np.abs(beta_1))) * (short_close - short_cost) / short_cost
-
-                    total_PnL += PnL
-
-                else:
-
-                    trade_PnL = (1 / (1 + np.abs(beta_1))) * (
-                                current_first_asset_close_price - long_cost) / long_cost - (
-                                            beta_1 / (1 + np.abs(beta_1))) * (
-                                            current_second_asset_close_price - short_cost) / short_cost
-
-                    if cross_zero_flag :
-
-                        if trade_PnL > SL_rate and current_std_spread_noise < 0 and day != num_trading_days - 2:
-                            continue
-
-                        else:
-
-                            trading_flag = 0
-                            long_close = next_first_asset_open_price
-                            short_close = next_second_asset_open_price
-                            PnL = (1 / (1 + np.abs(beta_1))) * (long_close - long_cost) / long_cost - (
-                                        beta_1 / (1 + np.abs(beta_1))) * (short_close - short_cost) / short_cost
-
-                    else:
-
-                        if trade_PnL > SL_rate and current_std_spread_noise < -1 * threshold and day != num_trading_days - 2:
-                            continue
-
-                        else:
-
-                            trading_flag = 0
-                            long_close = next_first_asset_open_price
-                            short_close = next_second_asset_open_price
-                            PnL = (1 / (1 + np.abs(beta_1))) * (long_close - long_cost) / long_cost - (
-                                        beta_1 / (1 + np.abs(beta_1))) * (short_close - short_cost) / short_cost
-
-                    total_PnL += PnL
-
-        if total_trade_count == 0 :
-            avg_PnL = 0
-        else :
-            avg_PnL = float(total_PnL/total_trade_count)
-
-
-        return total_trade_count, avg_PnL
-
-    def regularization_cost(self, regularized_value, trade_off_rate, Target_value):
-
-        accuracy_cost = sum((Target_value - regularized_value) ** 2)
-        smoonthness_cost = sum((regularized_value[1:] - regularized_value[:-1]) ** 2)
-
-        return accuracy_cost + trade_off_rate * smoonthness_cost
-
-    def threshold_optimization(self, threshold_set, Total_count, Avg_PnL):
-
-        trade_off_rate_set = np.array(range(-12, 13))
-        Total_count_reg_cost = []
-        Avg_PnL_reg_cost = []
-
-        for trade_off_rate in trade_off_rate_set:
-            Total_count_res = scipy.optimize.minimize(self.regularization_cost, np.zeros(len(Total_count)),
-                                                      args=(np.exp(trade_off_rate), Total_count))
-            Avg_PnL_res = scipy.optimize.minimize(self.regularization_cost, np.zeros(len(Avg_PnL)),
-                                                  args=(np.exp(trade_off_rate), Avg_PnL))
-
-            Total_count_cost = self.regularization_cost(Total_count_res.x, np.exp(trade_off_rate), Total_count)
-            Avg_PnL_cost = self.regularization_cost(Avg_PnL_res.x, np.exp(trade_off_rate), Avg_PnL)
-
-            Total_count_reg_cost.append(Total_count_cost)
-            Avg_PnL_reg_cost.append(Avg_PnL_cost)
-
-        Total_count_distance = 10000
-        Total_count_mean = np.mean(Total_count_reg_cost)
-        Total_count_target = -1
-
-        Avg_PnL_distance = 10000
-        Avg_PnL_mean = np.mean(Avg_PnL_reg_cost)
-        Avg_PnL_target = -1
-
-        for i in range(len(Avg_PnL_reg_cost)):
-
-            if abs(Total_count_reg_cost[i] - Total_count_mean) < Total_count_distance:
-                Total_count_distance = abs(Total_count_reg_cost[i] - Total_count_mean)
-
-                Total_count_target = i
-
-            if abs(Avg_PnL_reg_cost[i] - Avg_PnL_mean) < Avg_PnL_distance:
-                Avg_PnL_distance = abs(Avg_PnL_reg_cost[i] - Avg_PnL_mean)
-
-                Avg_PnL_target = i
-
-        Total_count_best_trade_off_rate = trade_off_rate_set[Total_count_target]
-        Avg_PnL_best_trade_off_rate = trade_off_rate_set[Avg_PnL_target]
-
-        Total_count_optimal_res = scipy.optimize.minimize(self.regularization_cost, np.zeros(len(Total_count)),
-                                                          args=(np.exp(Total_count_best_trade_off_rate), Total_count))
-        Avg_PnL_optimal_res = scipy.optimize.minimize(self.regularization_cost, np.zeros(len(Total_count)),
-                                                      args=(np.exp(Avg_PnL_best_trade_off_rate), Avg_PnL))
-
-        smoothed_Total_PnL = Total_count_optimal_res.x * Avg_PnL_optimal_res.x
-
-        selected_threshold = threshold_set[np.where(smoothed_Total_PnL == max(smoothed_Total_PnL))[0][0]]
-
-        return (selected_threshold)
-
-    def optimal_threshold(self, coint_look_back_period, selected_first_asset_prev_open, selected_first_asset_prev_close,
-                          selected_second_asset_prev_open, selected_second_asset_prev_close,
-                          beta_0, beta_1, threshold_set, SL_rate):
-
-        Total_count = []
-        Avg_PnL = []
-
-        for threshold in threshold_set:
-
-            curr_trade_count, curr_avg_pnl = self.previous_performance(coint_look_back_period,
-                                                                       selected_first_asset_prev_open,
-                                                                       selected_first_asset_prev_close,
-                                                                       selected_second_asset_prev_open,
-                                                                       selected_second_asset_prev_close,
-                                                                       beta_0, beta_1, threshold, SL_rate,
-                                                                       self.params.cross_zero)
-
-            Total_count.append(curr_trade_count)
-            Avg_PnL.append(curr_avg_pnl)
-
-        if len(np.where(Total_count == 0)) == len(Total_count):
-            return 1
-
-        print('Start threshold optimization')
-
-        best_threshold = self.threshold_optimization(threshold_set, Total_count, Avg_PnL)
-
-        print('Finished threshold')
-
-        return best_threshold
-
 
     def __init__(self):
 
@@ -489,15 +265,16 @@ class CointegrationStrat(bt.Strategy):
         self.selected_first_asset_log_price_ref = None
         self.selected_second_asset_log_price_ref = None
         self.spread_optimal_lag_order = None
-        self.spread_threshold = None
         self.trading_flag = 0
         self.asset_sample = []
         self.prev_sample_dict = {}
         # Storing the portfilio spending
         self.max_pos = 0.98
         self.SL_rate = self.params.SL_rate
-        self.threshold_set = np.array(range(1, 80)) * 0.025
         self.initial_asset_value = None
+        # Trading Signal related
+        self.curr_PS_power = 0
+        self.curr_PS_val = 0
 
 
     def next(self):
@@ -507,8 +284,8 @@ class CointegrationStrat(bt.Strategy):
         if self.trading_days <= self.params.coint_look_back_period:
             return
 
-        if self.current_time is None:
-            self.current_time = self.datas[0].datetime.date(0).month
+        if self.current_month is None:
+            self.current_month = self.datas[0].datetime.date(0).month
 
         # Entering Next Month/week, renew the selected pairs
         if self.params.selection_freq == 'month':
@@ -527,7 +304,6 @@ class CointegrationStrat(bt.Strategy):
 
         if self.pair_selection_flag:
 
-            self.pair_selection_flag = False
             # Storing the close price of the asset in the previous month
 
             self.asset_sample = []
@@ -577,30 +353,13 @@ class CointegrationStrat(bt.Strategy):
             if self.selected_first_asset is None :
                 return
 
-            # Saving the log price reference for this month and selecting the threshold
-            selected_first_asset_prev_open = []
-            selected_first_asset_prev_close = []
-            selected_second_asset_prev_open = []
-            selected_second_asset_prev_close = []
-
             for data in self.datas:
 
                  if data._name == self.selected_first_asset:
                      self.selected_first_asset_log_price_ref = np.log(data.close[0])
-                     for day in range(-2 * self.params.coint_look_back_period, 0):
-                         selected_first_asset_prev_open.append(data.open[day])
-                         selected_first_asset_prev_close.append(data.close[day])
 
                  elif data._name == self.selected_second_asset:
                      self.selected_second_asset_log_price_ref = np.log(data.close[0])
-                     for day in range(-2 * self.params.coint_look_back_period, 0):
-                         selected_second_asset_prev_open.append(data.open[day])
-                         selected_second_asset_prev_close.append(data.close[day])
-
-            self.spread_threshold = self.optimal_threshold(self.params.coint_look_back_period,
-                                                           selected_first_asset_prev_open, selected_first_asset_prev_close,
-                                                           selected_second_asset_prev_open, selected_second_asset_prev_close,
-                                                           self.beta_0, self.beta_1, self.threshold_set, self.SL_rate)
 
             self.log('Finish Spreaed Threshold Searching')
 
@@ -646,17 +405,17 @@ class CointegrationStrat(bt.Strategy):
         prev_spread = (prev_log_scaled_first_asset_data - self.beta_0 - self.beta_1 * prev_log_scaled_second_asset_data)\
                       /(1 + self.beta_1 ** 2)
 
+        curr_spread_vol = np.std(prev_spread)
+
         curr_ADF_test_val = self.ADF_test(prev_spread, self.spread_optimal_lag_order)
 
         if curr_ADF_test_val > self.params.ADF_threshold:
             cointegrated_flag = False
+        else :
+            self.curr_PS_power = self.params.ADF_threshold - curr_ADF_test_val
+            self.curr_PS_val = np.abs(curr_spread/curr_spread_vol) ** self.curr_PS_power
 
-        curr_spread_vol = np.std(prev_spread)
-
-        curr_std_spread = curr_spread/curr_spread_vol
-
-
-        if self.trading_flag == 0:
+        if self.getposition(first_asset).size == 0:
 
             if not cointegrated_flag:
                 return
@@ -667,7 +426,7 @@ class CointegrationStrat(bt.Strategy):
 
             # Do Long and Short based on the divergence of the equilibrium of two correlated asset
 
-            if (curr_std_spread < -1 * self.spread_threshold):
+            if (self.curr_PS_val > self.params.PS_threshold and curr_spread < 0):
 
                 # close the even pos
                 if self.params.long_bias:
@@ -681,7 +440,7 @@ class CointegrationStrat(bt.Strategy):
                 self.log('Long : %s & Short : %s' % (first_asset._name ,second_asset._name))
                 self.initial_asset_value = self.stats.broker.value[0]
 
-            elif (curr_std_spread > self.spread_threshold):
+            elif (self.curr_PS_val > self.params.PS_threshold and curr_spread > 0):
 
                 # close the even pos
                 if self.params.long_bias:
@@ -708,10 +467,8 @@ class CointegrationStrat(bt.Strategy):
 
             if self.params.cross_zero:
 
-                if (curr_std_spread >= 0 and self.trading_flag == -1) or \
-                        (curr_std_spread <= 0 and self.trading_flag == 1) \
-                        or SL_flag or not cointegrated_flag:
-                    self.trading_flag = 0
+                if (curr_spread >= 0 and self.trading_flag == -1) or (curr_spread <= 0 and self.trading_flag == 1) or SL_flag\
+                        or not cointegrated_flag:
                     self.log('Close Position :  %s & %s' % (first_asset._name ,second_asset._name))
 
                     # back to even position
@@ -727,13 +484,13 @@ class CointegrationStrat(bt.Strategy):
 
             else:
 
-                if (curr_std_spread > -1 * self.spread_threshold and self.trading_flag == -1) or \
-                        (curr_std_spread < self.spread_threshold and self.trading_flag == 1) or SL_flag\
+                if (curr_spread > -1 * self.spread_threshold and self.trading_flag == -1) or \
+                        (curr_spread < self.spread_threshold and self.trading_flag == 1) or SL_flag\
                         or not cointegrated_flag:
-                    self.trading_flag = 0
                     self.log('Close Position :  %s & %s' % (first_asset._name ,second_asset._name))
 
                     # back to even position
+
                     if self.params.long_bias:
                         number_of_asset = len(self.asset_sample)
                         for data in self.datas:
@@ -741,6 +498,7 @@ class CointegrationStrat(bt.Strategy):
                     else:
                         self.close(first_asset, exectype=bt.Order.Market)
                         self.close(second_asset, exectype=bt.Order.Market)
+
 
     def notify_order(self, order):
 
